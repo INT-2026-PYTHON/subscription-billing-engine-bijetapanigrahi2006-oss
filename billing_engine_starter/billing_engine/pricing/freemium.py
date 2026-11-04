@@ -15,9 +15,14 @@ class Freemium(PricingStrategy):
     """Returns 0 for quantity <= free_quota, else delegates overage to inner strategy."""
 
     def __init__(self, free_quota: int, overage_strategy: PricingStrategy) -> None:
-        # TODO Day 1
-        raise NotImplementedError("Day 1: implement Freemium.__init__")
-
+        if free_quota < 0:
+            raise ValueError("free_quota cannot be negative")
+        if not isinstance(overage_strategy, PricingStrategy):
+            raise TypeError("overage_strategy must be a PricingStrategy")
+        self.free_quota = free_quota
+        self.overage_strategy = overage_strategy
     def calculate(self, quantity: int) -> Money:
-        # TODO Day 1
-        raise NotImplementedError("Day 1: implement Freemium.calculate")
+        if quantity <= self.free_quota:
+            currency = self.overage_strategy.calculate(0).currency
+            return Money.zero(currency)
+        return self.overage_strategy.calculate(quantity - self.free_quota)
