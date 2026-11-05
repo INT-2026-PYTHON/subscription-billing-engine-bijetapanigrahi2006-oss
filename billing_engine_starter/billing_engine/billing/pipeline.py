@@ -38,5 +38,65 @@ def build_invoice(
     invoice_count_so_far: int,
 ) -> Invoice:
     """Pure function. Returns an Invoice (id=None, status=DRAFT) ready to be persisted."""
-    # TODO Day 2
-    raise NotImplementedError("Day 2: implement build_invoice")
+    # 1. Base charge from the pricing strategy
+    base = strategy.calculate(usage_quantity)
+    zero = Money.zero(base.currency)
+
+    # 2. Discount (if any)
+    if discount is not None:
+        discount_amount = discount.apply(base, DiscountContext(invoice_count_so_far))
+    else:
+        discount_amount = zero
+
+    # 3. Taxable amount
+    taxable = base - discount_amount
+
+    # 4. Tax on the taxable amount
+    tax = tax_calc.apply(taxable, tax_context)
+
+    # 5. Total
+    total = taxable + tax.total
+
+    # Line items (invoice_id is None until the invoice is saved)
+    line_items = [
+        InvoiceLineItem(
+            id=None,
+            invoice_id=None,
+            description=f"{plan.name} charge",
+            amount=base,
+            kind=LineItemKind.BASE,
+        )
+    ]
+    if discount_amount != zero:
+        line_items.append(
+            InvoiceLineItem(
+                id=None,
+                invoice_id=None,
+                description="Discount",
+                amount=zero - discount_amount,   # shown as a negative amount
+                kind=LineItemKind.DISCOUNT,
+            )
+        )
+    for label, amount in tax.components:
+        line_items.append(
+            InvoiceLineItem(
+                id=None,
+                invoice_id=None,
+                description=label,
+                amount=amount,
+                kind=LineItemKind.TAX,
+            )
+        )
+
+    return Invoice(
+        id=None,
+        subscription_id=subscription.id,
+        period_start=period_start,
+        period_end=period_end,
+        subtotal=base,
+        discount_total=discount_amount,
+        tax_total=tax.total,
+        total=total,
+        status=InvoiceStatus.DRAFT,
+        line_items=line_items,
+    )
