@@ -34,9 +34,11 @@ class Database:
     def init_schema(self) -> None:
         """Create all tables (idempotent — uses CREATE TABLE IF NOT EXISTS)."""
         sql = SCHEMA_PATH.read_text(encoding="utf-8")
-        with self.connect() as conn:
+        conn = self.connect()
+        try:
             conn.executescript(sql)
-
+        finally:
+            conn.close()
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         """Context manager for atomic multi-statement work.
