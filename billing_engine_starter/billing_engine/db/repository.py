@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from dataclasses import replace
+from contextlib import contextmanager
 from decimal import Decimal
 from typing import Optional
 
@@ -35,6 +36,16 @@ from billing_engine.models import (
 # ============================================================
 # CUSTOMERS
 # ============================================================
+@contextmanager
+def _use(db: Database, conn=None):
+    """Use the given connection (the caller owns the transaction),
+    or open a fresh transaction of our own."""
+    if conn is not None:
+        yield conn
+    else:
+        with db.transaction() as new_conn:
+            yield new_conn
+
 def _row_to_customer(row) -> Customer:
     return Customer(
         id=row["id"],
@@ -272,9 +283,9 @@ class SubscriptionRepository:
             conn.close()
         return [_row_to_subscription(r) for r in rows]
 
-    def update_period(self, subscription_id: int, new_start: date, new_end: date) -> None:
-        with self.db.transaction() as conn:
-            conn.execute(
+    def update_period(self, subscription_id: int, new_start: date, new_end: date, conn=None) -> None:
+        with _use(self.db, conn) as c:
+            c.execute(
                 "UPDATE subscriptions SET current_period_start = ?, "
                 "current_period_end = ? WHERE id = ?",
                 (new_start.isoformat(), new_end.isoformat(), subscription_id),
@@ -366,11 +377,11 @@ class InvoiceRepository:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def add(self, invoice: Invoice) -> Invoice:
+    def add(self, invoice: Invoice, conn=None) -> Invoice:
         """Insert invoice (NOT line items). A duplicate (subscription_id,
         period_start) raises sqlite3.IntegrityError naturally."""
-        with self.db.transaction() as conn:
-            cursor = conn.execute(
+        with _use(self.db, conn) as c:
+            cursor = c.execute(
                 "INSERT INTO invoices (subscription_id, period_start, period_end, "
                 "currency, subtotal, discount_total, tax_total, total, status, "
                 "issued_at, pdf_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -435,9 +446,9 @@ class InvoiceLineItemRepository:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def add(self, line_item: InvoiceLineItem) -> InvoiceLineItem:
-        with self.db.transaction() as conn:
-            cursor = conn.execute(
+    def add(self, line_item: InvoiceLineItem, conn=None) -> InvoiceLineItem:
+        with _use(self.db, conn) as c:
+            cursor = c.execute(
                 "INSERT INTO invoice_line_items (invoice_id, description, amount, kind) "
                 "VALUES (?, ?, ?, ?)",
                 (
@@ -493,9 +504,9 @@ class LedgerRepository:
     def __init__(self, db: Database) -> None:
         self.db = db
 
-    def add(self, entry: LedgerEntry) -> LedgerEntry:
-        with self.db.transaction() as conn:
-            cursor = conn.execute(
+    def add(self, entry: LedgerEntry, conn=None) -> LedgerEntry:
+        with _use(self.db, conn) as c:
+            cursor = c.execute(
                 "INSERT INTO ledger_entries (invoice_id, customer_id, amount, "
                 "currency, direction, reason) VALUES (?, ?, ?, ?, ?, ?)",
                 (
@@ -508,13 +519,9 @@ class LedgerRepository:
                 ),
             )
             new_id = cursor.lastrowid
-        conn = self.db.connect()
-        try:
-            row = conn.execute(
+            row = c.execute(
                 "SELECT * FROM ledger_entries WHERE id = ?", (new_id,)
             ).fetchone()
-        finally:
-            conn.close()
         return _row_to_ledger(row)
 
     def list_for_customer(self, customer_id: int) -> list[LedgerEntry]:
@@ -551,14 +558,41 @@ class PaymentAttemptRepository:
         status: str,
         failure_reason: Optional[str],
         next_retry_at: Optional[datetime],
+        conn=None,
     ) -> int:
-        # TODO Day 3.
-        raise NotImplementedError("Day 3: implement PaymentAttemptRepository.add")
+        with _use(self.db, conn) as c:
+            cursor = c.execute(
+                "INSERT INTO payment_attempts (invoice_id, attempt_no, status, "
+                "failure_reason, next_retry_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    invoice_id,
+                    attempt_no,
+                    status,
+                    failure_reason,
+                    next_retry_at.isoformat() if next_retry_at else None,
+                ),
+            )
+            return cursor.lastrowid
 
     def list_for_invoice(self, invoice_id: int) -> list[dict]:
-        # TODO Day 3.
-        raise NotImplementedError("Day 3: implement PaymentAttemptRepository.list_for_invoice")
+        conn = self.db.connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM payment_attempts WHERE invoice_id = ? "
+                "ORDER BY attempt_no",
+                (invoice_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
 
     def count_for_invoice(self, invoice_id: int) -> int:
-        # TODO Day 3.
-        raise NotImplementedError("Day 3: implement PaymentAttemptRepository.count_for_invoice")
+        conn = self.db.connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM payment_attempts WHERE invoice_id = ?",
+                (invoice_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        return int(row["n"])
